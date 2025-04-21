@@ -1,89 +1,172 @@
 from fastapi import APIRouter
 import boto3
+from datetime import datetime
 
 router = APIRouter()
 
+def isoformat(dt):
+    if isinstance(dt, str):
+        return dt
+    if dt is None:
+        return ""
+    return dt.isoformat() if hasattr(dt, 'isoformat') else str(dt)
+
 @router.get("/resources-list", tags=["Resources"])
 def list_resources():
-    resources = {}
     # EC2 Instances
+    ec2Instances = []
     try:
         ec2 = boto3.client('ec2')
-        ec2_instances = ec2.describe_instances()
-        resources['ec2_instances'] = [
-            {
-                'InstanceId': i['InstanceId'],
-                'State': i['State']['Name'],
-                'Type': i['InstanceType'],
-                'AZ': i['Placement']['AvailabilityZone']
-            }
-            for r in ec2_instances['Reservations'] for i in r['Instances']
-        ]
+        region = ec2.meta.region_name
+        reservations = ec2.describe_instances()['Reservations']
+        for r in reservations:
+            for i in r['Instances']:
+                ec2Instances.append({
+                    'id': i.get('InstanceId', ''),
+                    'name': next((t['Value'] for t in i.get('Tags', []) if t['Key'] == 'Name'), i.get('InstanceId', '')),
+                    'type': 'EC2',
+                    'region': region,
+                    'status': i.get('State', {}).get('Name', ''),
+                    'createdAt': isoformat(i.get('LaunchTime')),
+                    'instanceType': i.get('InstanceType', ''),
+                    'privateIp': i.get('PrivateIpAddress', ''),
+                    'publicIp': i.get('PublicIpAddress', ''),
+                })
     except Exception as e:
-        resources['ec2_instances'] = f"Error: {e}"
+        pass
 
     # RDS Instances
+    rdsInstances = []
     try:
         rds = boto3.client('rds')
-        rds_instances = rds.describe_db_instances()
-        resources['rds_instances'] = [
-            {
-                'DBInstanceIdentifier': db['DBInstanceIdentifier'],
-                'Engine': db['Engine'],
-                'Status': db['DBInstanceStatus']
-            }
-            for db in rds_instances['DBInstances']
-        ]
+        region = rds.meta.region_name
+        for db in rds.describe_db_instances()['DBInstances']:
+            rdsInstances.append({
+                'id': db.get('DBInstanceIdentifier', ''),
+                'name': db.get('DBInstanceIdentifier', ''),
+                'type': 'RDS',
+                'region': region,
+                'status': db.get('DBInstanceStatus', ''),
+                'createdAt': isoformat(db.get('InstanceCreateTime')),
+                'engine': db.get('Engine', ''),
+                'size': str(db.get('AllocatedStorage', '')),
+                'endpoint': db.get('Endpoint', {}).get('Address', ''),
+            })
     except Exception as e:
-        resources['rds_instances'] = f"Error: {e}"
+        pass
 
     # IAM Users
+    iamUsers = []
     try:
         iam = boto3.client('iam')
-        users = iam.list_users()
-        resources['iam_users'] = [u['UserName'] for u in users['Users']]
+        for u in iam.list_users()['Users']:
+            iamUsers.append({
+                'id': u.get('UserId', ''),
+                'name': u.get('UserName', ''),
+                'type': 'IAM',
+                'region': 'global',
+                'status': '',
+                'createdAt': isoformat(u.get('CreateDate')),
+                'arn': u.get('Arn', ''),
+                'console_access': True,  # Placeholder
+                'last_activity': '',     # Placeholder
+            })
     except Exception as e:
-        resources['iam_users'] = f"Error: {e}"
+        pass
 
     # ECS Clusters
+    ecsClusters = []
     try:
         ecs = boto3.client('ecs')
-        clusters = ecs.list_clusters()
-        resources['ecs_clusters'] = clusters['clusterArns']
+        region = ecs.meta.region_name
+        for arn in ecs.list_clusters()['clusterArns']:
+            desc = ecs.describe_clusters(clusters=[arn])['clusters'][0]
+            ecsClusters.append({
+                'id': desc.get('clusterArn', ''),
+                'name': desc.get('clusterName', ''),
+                'type': 'ECS',
+                'region': region,
+                'status': desc.get('status', ''),
+                'createdAt': '',
+                'serviceCount': desc.get('registeredContainerInstancesCount', 0),
+                'taskCount': desc.get('runningTasksCount', 0),
+            })
     except Exception as e:
-        resources['ecs_clusters'] = f"Error: {e}"
+        pass
 
     # S3 Buckets
+    s3Buckets = []
     try:
         s3 = boto3.client('s3')
-        buckets = s3.list_buckets()
-        resources['s3_buckets'] = [b['Name'] for b in buckets['Buckets']]
+        for b in s3.list_buckets()['Buckets']:
+            bucket_name = b.get('Name', '')
+            bucket_region = ''
+            try:
+                loc = s3.get_bucket_location(Bucket=bucket_name)
+                bucket_region = loc.get('LocationConstraint') or 'us-east-1'
+            except Exception:
+                pass
+            s3Buckets.append({
+                'id': bucket_name,
+                'name': bucket_name,
+                'type': 'S3',
+                'region': bucket_region,
+                'status': '',
+                'createdAt': isoformat(b.get('CreationDate')),
+                'arnName': '',
+                'size': '',
+                'objectCount': None,
+            })
     except Exception as e:
-        resources['s3_buckets'] = f"Error: {e}"
+        pass
 
-    # ALBs (Application Load Balancers)
+    # ALBs
+    albs = []
     try:
         elbv2 = boto3.client('elbv2')
-        albs = elbv2.describe_load_balancers()
-        resources['albs'] = [lb['LoadBalancerName'] for lb in albs['LoadBalancers'] if lb['Type'] == 'application']
+        region = elbv2.meta.region_name
+        for lb in elbv2.describe_load_balancers()['LoadBalancers']:
+            if lb.get('Type') == 'application':
+                albs.append({
+                    'id': lb.get('LoadBalancerArn', ''),
+                    'name': lb.get('LoadBalancerName', ''),
+                    'type': 'ALB',
+                    'region': region,
+                    'status': lb.get('State', {}).get('Code', ''),
+                    'createdAt': isoformat(lb.get('CreatedTime')),
+                    'dnsName': lb.get('DNSName', ''),
+                    'scheme': lb.get('Scheme', ''),
+                })
     except Exception as e:
-        resources['albs'] = f"Error: {e}"
+        pass
 
     # Route53 Records
+    route53Records = []
     try:
         route53 = boto3.client('route53')
-        hosted_zones = route53.list_hosted_zones()
-        records = []
-        for zone in hosted_zones['HostedZones']:
+        for zone in route53.list_hosted_zones()['HostedZones']:
             zone_records = route53.list_resource_record_sets(HostedZoneId=zone['Id'])
             for record in zone_records['ResourceRecordSets']:
-                records.append({
-                    'ZoneName': zone['Name'],
-                    'Name': record['Name'],
-                    'Type': record['Type']
+                route53Records.append({
+                    'id': f"{zone['Id']}:{record['Name']}:{record['Type']}",
+                    'name': record.get('Name', ''),
+                    'type': 'Route53',
+                    'region': 'global',
+                    'status': '',
+                    'createdAt': '',
+                    'recordType': record.get('Type', ''),
+                    'recordValue': record.get('ResourceRecords', [{}])[0].get('Value', '') if record.get('ResourceRecords') else '',
+                    'ttl': record.get('TTL', None),
                 })
-        resources['route53_records'] = records
     except Exception as e:
-        resources['route53_records'] = f"Error: {e}"
+        pass
 
-    return resources 
+    return {
+        'ec2Instances': ec2Instances,
+        'rdsInstances': rdsInstances,
+        'iamUsers': iamUsers,
+        'ecsClusters': ecsClusters,
+        's3Buckets': s3Buckets,
+        'albs': albs,
+        'route53Records': route53Records,
+    } 

@@ -1,25 +1,36 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, APIRouter
 from dotenv import load_dotenv
 load_dotenv()
 
-from app.aws import cloudformation, autoscaling, ssm, cloudwatch, lambda_fn, resources
+from app.aws import cloudformation, autoscaling, ssm, cloudwatch, lambda_fn, resources, iam
 import boto3
 
 app = FastAPI(title="AWS MCP Server")
 
 # CloudFormation endpoints
-app.include_router(cloudformation.router, prefix="/cloudformation", tags=["CloudFormation"])
+app.include_router(cloudformation.router, prefix="/api/cloudformation", tags=["CloudFormation"])
 # Auto Scaling endpoints
-app.include_router(autoscaling.router, prefix="/autoscaling", tags=["AutoScaling"])
+app.include_router(autoscaling.router, prefix="/api/autoscaling", tags=["AutoScaling"])
 # SSM endpoints
-app.include_router(ssm.router, prefix="/ssm", tags=["SSM"])
+app.include_router(ssm.router, prefix="/api/ssm", tags=["SSM"])
 # CloudWatch endpoints
-app.include_router(cloudwatch.router, prefix="/cloudwatch", tags=["CloudWatch"])
+app.include_router(cloudwatch.router, prefix="/api/cloudwatch", tags=["CloudWatch"])
 # Lambda endpoints
-app.include_router(lambda_fn.router, prefix="/lambda", tags=["Lambda"])
+app.include_router(lambda_fn.router, prefix="/api/lambda", tags=["Lambda"])
 # Resources endpoints
-app.include_router(resources.router, tags=["Resources"])
+app.include_router(resources.router, prefix="/api", tags=["Resources"])
+# IAM endpoints
+app.include_router(iam.router, prefix="/api/iam", tags=["IAM"])
+
+region_router = APIRouter()
+
+@region_router.get("/region", tags=["Meta"])
+def get_region():
+    region = os.environ.get("AWS_DEFAULT_REGION") or boto3.session.Session().region_name or "us-east-1"
+    return {"region": region}
+
+app.include_router(region_router, prefix="/api")
 
 @app.get("/resources-list", tags=["Resources"])
 def list_resources():
